@@ -99,12 +99,27 @@ class AshaHealthPlugin(BasePlugin):
 
         Handles:
         - Markdown-wrapped JSON (```json ... ```)
+        - Extract JSON from mixed text output
         - Temperature F→C conversion
         - Default visit_date to today
         - Sets response_text from confirmation_message
         """
+        logger.info("[ASHA] Raw LLM output: %s", llm_output[:500])
         cleaned = _strip_markdown(llm_output)
-        data = json.loads(cleaned)
+
+        # Try direct parse first
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError:
+            # Try to extract JSON object from the text
+            data = _extract_json(cleaned)
+            if data is None:
+                # Last resort: return the raw text as response
+                logger.warning("[ASHA] Could not parse JSON, returning raw text")
+                return {
+                    "response_text": llm_output.strip(),
+                    "confirmation_message": llm_output.strip(),
+                }
 
         # Temperature F→C conversion if > 50 (likely Fahrenheit)
         temp = data.get("temperature")
@@ -204,3 +219,29 @@ def _strip_markdown(text: str) -> str:
         lines = [l for l in lines if not l.strip().startswith("```")]
         cleaned = "\n".join(lines)
     return cleaned
+
+
+def _extract_json(text: str) -> dict[str, Any] | None:
+    """Try to extract a JSON object from mixed text.
+
+    Handles cases where the LLM wraps JSON in extra text like
+    'Here is the data: {...}' or returns multiple lines before JSON.
+    """
+    # Try to find JSON between { and }
+    start = text.find("{")
+    if start == -1:
+        return None
+
+    # Find the matching closing brace
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None

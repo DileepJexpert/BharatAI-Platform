@@ -44,8 +44,19 @@ class LawyerAIPlugin(BasePlugin):
 
     def parse_response(self, llm_output: str, context: dict[str, Any]) -> dict[str, Any]:
         """Parse LLM JSON output into structured legal response."""
+        logger.info("[LAWYER] Raw LLM output: %s", llm_output[:500])
         cleaned = _strip_markdown(llm_output)
-        data = json.loads(cleaned)
+
+        try:
+            data = json.loads(cleaned)
+        except json.JSONDecodeError:
+            data = _extract_json(cleaned)
+            if data is None:
+                logger.warning("[LAWYER] Could not parse JSON, returning raw text")
+                return {
+                    "response_text": llm_output.strip(),
+                    "answer": llm_output.strip(),
+                }
 
         # Ensure response_text exists
         if not data.get("response_text"):
@@ -106,3 +117,22 @@ def _strip_markdown(text: str) -> str:
         lines = [l for l in lines if not l.strip().startswith("```")]
         cleaned = "\n".join(lines)
     return cleaned
+
+
+def _extract_json(text: str) -> dict[str, Any] | None:
+    """Try to extract a JSON object from mixed text."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
