@@ -54,6 +54,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         path = request.url.path
 
+        # Skip auth for CORS preflight requests
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         # Skip auth for public paths
         if path in PUBLIC_PATHS or path.startswith("/docs") or path.startswith("/redoc"):
             return await call_next(request)

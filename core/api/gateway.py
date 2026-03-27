@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from core.api.plugin_registry import PluginRegistry
@@ -78,6 +79,15 @@ def create_app() -> FastAPI:
         description="Shared AI backend for Indian-language applications",
         version="1.0.0-mvp",
         lifespan=lifespan,
+    )
+
+    # Add CORS middleware (must be added before auth)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     # Add auth middleware
