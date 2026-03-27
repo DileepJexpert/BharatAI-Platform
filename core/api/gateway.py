@@ -6,6 +6,10 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
