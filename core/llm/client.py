@@ -10,7 +10,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_TIMEOUT_SECONDS: float = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "30"))
+OLLAMA_TIMEOUT_SECONDS: float = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
 
 
 class OllamaConnectionError(Exception):
@@ -103,6 +103,7 @@ class OllamaClient:
             "stream": False,
         }
 
+        logger.info("[LLM] Sending request to Ollama model=%s...", model)
         try:
             response = await client.post("/api/chat", json=payload)
         except httpx.TimeoutException as exc:
@@ -131,13 +132,18 @@ class OllamaClient:
 
         message = data.get("message", {})
 
-        return LLMResponse(
+        result = LLMResponse(
             text=message.get("content", ""),
             model=data.get("model", model),
             total_duration_ms=data.get("total_duration", 0) // 1_000_000,
             prompt_eval_count=data.get("prompt_eval_count", 0),
             eval_count=data.get("eval_count", 0),
         )
+        logger.info(
+            "[LLM] Response received: %dms, prompt_tokens=%d, eval_tokens=%d",
+            result.total_duration_ms, result.prompt_eval_count, result.eval_count,
+        )
+        return result
 
     async def is_healthy(self) -> bool:
         """Check if Ollama is reachable."""
