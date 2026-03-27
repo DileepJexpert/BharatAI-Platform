@@ -58,8 +58,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if path in PUBLIC_PATHS or path.startswith("/docs") or path.startswith("/redoc"):
             return await call_next(request)
 
-        # Also skip for /models (read-only info)
-        if path == "/models":
+        # Also skip for /models (read-only info) and /webhook (Twilio)
+        if path == "/models" or path.startswith("/webhook"):
             return await call_next(request)
 
         # Extract API key

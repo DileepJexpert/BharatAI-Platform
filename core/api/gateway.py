@@ -86,6 +86,10 @@ def create_app() -> FastAPI:
     # Register core routes
     _register_core_routes(app)
 
+    # Register WhatsApp webhook
+    from core.integrations.whatsapp import router as whatsapp_router
+    app.include_router(whatsapp_router)
+
     # Register plugin routes
     _register_plugin_routes(app)
 

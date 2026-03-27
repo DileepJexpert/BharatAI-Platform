@@ -17,7 +17,7 @@ class BasePlugin(ABC):
     @property
     @abstractmethod
     def app_id(self) -> str:
-        """Unique slug: 'asha_health', 'lawyer_ai', etc."""
+        """Unique slug identifying this application plugin."""
 
     @abstractmethod
     def system_prompt(self, language: str, context: dict[str, Any]) -> str:
