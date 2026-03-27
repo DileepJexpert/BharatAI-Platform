@@ -126,9 +126,8 @@ class AshaHealthPlugin(BasePlugin):
         if temp is not None and temp > 50:
             data["temperature"] = round((temp - 32) * 5 / 9, 1)
 
-        # Default visit_date to today
-        if not data.get("visit_date"):
-            data["visit_date"] = date.today().isoformat()
+        # Always set visit_date to today (ASHA workers record visits in real-time)
+        data["visit_date"] = date.today().isoformat()
 
         # Ensure response_text exists
         if not data.get("response_text"):
