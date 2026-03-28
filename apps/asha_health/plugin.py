@@ -95,54 +95,40 @@ class AshaHealthPlugin(BasePlugin):
         return build_system_prompt(SYSTEM_PROMPT, language)
 
     def parse_response(self, llm_output: str, context: dict[str, Any]) -> dict[str, Any]:
-        """Parse LLM JSON output into structured visit data.
-
-        Handles:
-        - Markdown-wrapped JSON (```json ... ```)
-        - Extract JSON from mixed text output
-        - Temperature F→C conversion
-        - Default visit_date to today
-        - Sets response_text from confirmation_message
-        """
+        """Parse LLM output — handles both conversational text and JSON with patient data."""
         logger.info("[ASHA] Raw LLM output: %s", llm_output[:500])
-        cleaned = _strip_markdown(llm_output)
 
-        # Try direct parse first
-        try:
-            data = json.loads(cleaned)
-        except json.JSONDecodeError:
-            # Try to extract JSON object from the text
-            data = _extract_json(cleaned)
-            if data is None:
-                # Last resort: return the raw text as response
-                logger.warning("[ASHA] Could not parse JSON, returning raw text")
-                return {
-                    "type": "chat",
-                    "response_text": llm_output.strip(),
-                }
+        # Try to extract JSON from the response (may be embedded in conversation text)
+        data = _extract_json(llm_output)
 
-        msg_type = data.get("type", "visit")
-        logger.info("[ASHA] Message type: %s", msg_type)
+        if data and data.get("patient_name"):
+            # LLM included structured patient data — this is a visit record
+            logger.info("[ASHA] Visit data found: patient=%s", data.get("patient_name"))
 
-        # For chat/help messages, just pass through
-        if msg_type in ("chat", "help"):
-            if not data.get("response_text"):
-                data["response_text"] = data.get("answer", llm_output.strip())
-            logger.info("[ASHA] Chat/help response: %s", data["response_text"][:200])
+            # Temperature F→C conversion if > 50 (likely Fahrenheit)
+            temp = data.get("temperature")
+            if temp is not None and isinstance(temp, (int, float)) and temp > 50:
+                data["temperature"] = round((temp - 32) * 5 / 9, 1)
+
+            # Always set visit_date to today
+            data["visit_date"] = date.today().isoformat()
+
+            # The conversational text is the response_text
+            # Strip the JSON block from the text to get the natural response
+            response_text = _strip_json_block(llm_output).strip()
+            if not response_text:
+                response_text = data.get("confirmation_message", "Visit recorded.")
+            data["response_text"] = response_text
+
             return data
-
-        # For visit data — apply post-processing
-        # Temperature F→C conversion if > 50 (likely Fahrenheit)
-        temp = data.get("temperature")
-        if temp is not None and isinstance(temp, (int, float)) and temp > 50:
-            data["temperature"] = round((temp - 32) * 5 / 9, 1)
-
-        # Always set visit_date to today (ASHA workers record visits in real-time)
-        data["visit_date"] = date.today().isoformat()
-
-        # Ensure response_text exists
-        if not data.get("response_text"):
-            data["response_text"] = data.get("confirmation_message", "")
+        else:
+            # Pure conversational response — no patient data
+            logger.info("[ASHA] Conversational response (no patient data)")
+            # Clean up any stray JSON artifacts
+            response_text = _strip_json_block(llm_output).strip() or llm_output.strip()
+            return {
+                "response_text": response_text,
+            }
 
         logger.info("[ASHA] Visit parsed: patient=%s, complaint=%s", data.get("patient_name"), data.get("complaint"))
         return data
@@ -232,12 +218,29 @@ def _strip_markdown(text: str) -> str:
     return cleaned
 
 
-def _extract_json(text: str) -> dict[str, Any] | None:
-    """Try to extract a JSON object from mixed text.
+def _strip_json_block(text: str) -> str:
+    """Remove JSON blocks (```json...``` or raw {...}) from text to get conversational part."""
+    import re
+    # Remove ```json ... ``` blocks
+    cleaned = re.sub(r'```json\s*\{[^`]*\}\s*```', '', text, flags=re.DOTALL)
+    cleaned = re.sub(r'```\s*\{[^`]*\}\s*```', '', cleaned, flags=re.DOTALL)
+    # Remove standalone JSON objects (lines starting with {)
+    lines = cleaned.split('\n')
+    non_json_lines = []
+    in_json = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('{'):
+            in_json = True
+        if not in_json:
+            non_json_lines.append(line)
+        if in_json and stripped.endswith('}'):
+            in_json = False
+    return '\n'.join(non_json_lines).strip()
 
-    Handles cases where the LLM wraps JSON in extra text like
-    'Here is the data: {...}' or returns multiple lines before JSON.
-    """
+
+def _extract_json(text: str) -> dict[str, Any] | None:
+    """Try to extract a JSON object from mixed text."""
     # Try to find JSON between { and }
     start = text.find("{")
     if start == -1:
