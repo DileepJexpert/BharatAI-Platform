@@ -117,13 +117,24 @@ class AshaHealthPlugin(BasePlugin):
                 # Last resort: return the raw text as response
                 logger.warning("[ASHA] Could not parse JSON, returning raw text")
                 return {
+                    "type": "chat",
                     "response_text": llm_output.strip(),
-                    "confirmation_message": llm_output.strip(),
                 }
 
+        msg_type = data.get("type", "visit")
+        logger.info("[ASHA] Message type: %s", msg_type)
+
+        # For chat/help messages, just pass through
+        if msg_type in ("chat", "help"):
+            if not data.get("response_text"):
+                data["response_text"] = data.get("answer", llm_output.strip())
+            logger.info("[ASHA] Chat/help response: %s", data["response_text"][:200])
+            return data
+
+        # For visit data — apply post-processing
         # Temperature F→C conversion if > 50 (likely Fahrenheit)
         temp = data.get("temperature")
-        if temp is not None and temp > 50:
+        if temp is not None and isinstance(temp, (int, float)) and temp > 50:
             data["temperature"] = round((temp - 32) * 5 / 9, 1)
 
         # Always set visit_date to today (ASHA workers record visits in real-time)
@@ -133,6 +144,7 @@ class AshaHealthPlugin(BasePlugin):
         if not data.get("response_text"):
             data["response_text"] = data.get("confirmation_message", "")
 
+        logger.info("[ASHA] Visit parsed: patient=%s, complaint=%s", data.get("patient_name"), data.get("complaint"))
         return data
 
     def router(self) -> APIRouter:

@@ -54,9 +54,12 @@ class LawyerAIPlugin(BasePlugin):
             if data is None:
                 logger.warning("[LAWYER] Could not parse JSON, returning raw text")
                 return {
+                    "type": "chat",
                     "response_text": llm_output.strip(),
-                    "answer": llm_output.strip(),
                 }
+
+        msg_type = data.get("type", "legal")
+        logger.info("[LAWYER] Message type: %s", msg_type)
 
         # Ensure response_text exists
         if not data.get("response_text"):
