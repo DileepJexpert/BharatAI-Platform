@@ -121,6 +121,36 @@ class ApiService extends ChangeNotifier {
     throw ApiException(response.statusCode, response.body);
   }
 
+  // --- Admin: Available models ---
+  Future<Map<String, dynamic>> getAvailableModels() async {
+    final response = await http
+        .get(Uri.parse('$_baseUrl/admin/available-models'), headers: _headers)
+        .timeout(const Duration(seconds: 10));
+
+    if (response.statusCode == 200) {
+      return jsonDecode(response.body);
+    }
+    throw ApiException(response.statusCode, response.body);
+  }
+
+  // --- Admin: Switch model ---
+  Future<Map<String, dynamic>> switchModel(String modelKey) async {
+    final response = await http
+        .post(
+          Uri.parse('$_baseUrl/admin/switch-model'),
+          headers: _headers,
+          body: jsonEncode({'model_key': modelKey}),
+        )
+        .timeout(const Duration(seconds: 30));
+
+    if (response.statusCode == 200) {
+      // Refresh health to update model status
+      await checkHealth();
+      return jsonDecode(response.body);
+    }
+    throw ApiException(response.statusCode, response.body);
+  }
+
   // --- Admin: Load model ---
   Future<Map<String, dynamic>> loadModel(String modelKey) async {
     final response = await http

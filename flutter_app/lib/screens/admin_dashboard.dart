@@ -12,7 +12,11 @@ class AdminDashboard extends StatefulWidget {
 
 class _AdminDashboardState extends State<AdminDashboard> {
   bool _isRefreshing = false;
+  bool _isSwitchingModel = false;
   Map<String, dynamic>? _visits;
+  List<dynamic>? _availableModels;
+  String? _activeModelKey;
+  String? _switchMessage;
 
   @override
   void initState() {
@@ -27,7 +31,38 @@ class _AdminDashboardState extends State<AdminDashboard> {
     try {
       _visits = await api.listVisits();
     } catch (_) {}
+    try {
+      final modelData = await api.getAvailableModels();
+      _availableModels = modelData['models'] as List?;
+      _activeModelKey = modelData['active_model'] as String?;
+    } catch (_) {}
     setState(() => _isRefreshing = false);
+  }
+
+  Future<void> _switchModel(String modelKey) async {
+    setState(() {
+      _isSwitchingModel = true;
+      _switchMessage = null;
+    });
+    final api = context.read<ApiService>();
+    try {
+      final result = await api.switchModel(modelKey);
+      setState(() {
+        _activeModelKey = modelKey;
+        _switchMessage = result['message'] as String?;
+        if (result['pull_command'] != null) {
+          _switchMessage =
+              '$_switchMessage\n\nIf model not downloaded, run:\n${result['pull_command']}';
+        }
+      });
+      await _refresh();
+    } catch (e) {
+      setState(() {
+        _switchMessage = 'Error: $e';
+      });
+    } finally {
+      setState(() => _isSwitchingModel = false);
+    }
   }
 
   @override
@@ -78,8 +113,8 @@ class _AdminDashboardState extends State<AdminDashboard> {
                     children: [
                       _InfoRow('Status', health.status, Colors.green),
                       _InfoRow('Version', health.version, null),
-                      _InfoRow('Plugins',
-                          health.pluginsLoaded.join(', '), null),
+                      _InfoRow(
+                          'Plugins', health.pluginsLoaded.join(', '), null),
                     ],
                   ),
                 ),
@@ -93,40 +128,22 @@ class _AdminDashboardState extends State<AdminDashboard> {
 
               const SizedBox(height: 16),
 
-              // --- Loaded Model ---
-              _SectionHeader(title: 'Active Model'),
-              Card(
-                child: ListTile(
-                  leading: Icon(
-                    Icons.memory,
-                    color: health.modelStatus.activeModel != null
-                        ? Colors.green
-                        : Colors.grey,
-                  ),
-                  title: Text(
-                    health.modelStatus.activeModelTag ?? 'No model loaded',
-                  ),
-                  subtitle: Text(
-                    health.modelStatus.activeModel != null
-                        ? '${health.modelStatus.modelReservedMb} MB VRAM'
-                        : 'Load a model to start inference',
-                  ),
-                  trailing: health.modelStatus.activeModel != null
-                      ? const Chip(
-                          label: Text('WARM'),
-                          backgroundColor: Colors.green,
-                          labelStyle: TextStyle(
-                              color: Colors.white, fontSize: 11),
-                        )
-                      : null,
-                ),
+              // ============================================
+              // --- MODEL SELECTOR (NEW) ---
+              // ============================================
+              _SectionHeader(title: 'Switch AI Model'),
+              _ModelSelectorCard(
+                availableModels: _availableModels,
+                activeModelKey: _activeModelKey,
+                isSwitching: _isSwitchingModel,
+                switchMessage: _switchMessage,
+                onSwitch: _switchModel,
+                vramBudget: health.modelStatus.vramBudgetMb,
               ),
-            ],
 
-            const SizedBox(height: 16),
+              const SizedBox(height: 16),
 
-            // --- Plugins ---
-            if (health != null) ...[
+              // --- Plugins ---
               _SectionHeader(title: 'Plugins'),
               ...health.pluginsLoaded.map((p) => Card(
                     child: ListTile(
@@ -199,7 +216,267 @@ class _AdminDashboardState extends State<AdminDashboard> {
   }
 }
 
-// --- Widgets ---
+// ============================================
+// MODEL SELECTOR CARD
+// ============================================
+
+class _ModelSelectorCard extends StatelessWidget {
+  final List<dynamic>? availableModels;
+  final String? activeModelKey;
+  final bool isSwitching;
+  final String? switchMessage;
+  final Function(String) onSwitch;
+  final int vramBudget;
+
+  const _ModelSelectorCard({
+    required this.availableModels,
+    required this.activeModelKey,
+    required this.isSwitching,
+    required this.switchMessage,
+    required this.onSwitch,
+    required this.vramBudget,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (availableModels == null) {
+      return const Card(
+        child: Padding(
+          padding: EdgeInsets.all(16),
+          child: Text('Loading models...', style: TextStyle(color: Colors.grey)),
+        ),
+      );
+    }
+
+    final freeModels =
+        availableModels!.where((m) => m['category'] == 'free').toList();
+    final paidModels =
+        availableModels!.where((m) => m['category'] == 'paid').toList();
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Current model display
+            Row(
+              children: [
+                const Icon(Icons.memory, color: Colors.blue),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Current Model',
+                          style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      Text(
+                        _getDisplayName(activeModelKey),
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                ),
+                if (isSwitching)
+                  const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+              ],
+            ),
+
+            if (switchMessage != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: switchMessage!.startsWith('Error')
+                      ? Colors.red.shade50
+                      : Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  switchMessage!,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: switchMessage!.startsWith('Error')
+                        ? Colors.red.shade700
+                        : Colors.green.shade700,
+                  ),
+                ),
+              ),
+            ],
+
+            const Divider(height: 24),
+
+            // Free models section
+            Text('Free Models (Local GPU)',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.green.shade700)),
+            const SizedBox(height: 8),
+            ...freeModels.map((m) => _ModelTile(
+                  model: m,
+                  isActive: m['model_key'] == activeModelKey,
+                  isSwitching: isSwitching,
+                  onTap: () => onSwitch(m['model_key'] as String),
+                )),
+
+            if (paidModels.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text('Cloud Models (Paid — Coming Soon)',
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.purple.shade700)),
+              const SizedBox(height: 8),
+              ...paidModels.map((m) => _ModelTile(
+                    model: m,
+                    isActive: m['model_key'] == activeModelKey,
+                    isSwitching: true, // disabled for now
+                    onTap: () {},
+                    isPaid: true,
+                  )),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _getDisplayName(String? key) {
+    if (key == null) return 'No model loaded';
+    final model = availableModels?.firstWhere(
+      (m) => m['model_key'] == key,
+      orElse: () => {'display_name': key},
+    );
+    return model?['display_name'] ?? key;
+  }
+}
+
+class _ModelTile extends StatelessWidget {
+  final Map<String, dynamic> model;
+  final bool isActive;
+  final bool isSwitching;
+  final VoidCallback onTap;
+  final bool isPaid;
+
+  const _ModelTile({
+    required this.model,
+    required this.isActive,
+    required this.isSwitching,
+    required this.onTap,
+    this.isPaid = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final canLoad = model['can_load'] == true;
+    final vramMb = model['vram_mb'] as int? ?? 0;
+    final name = model['display_name'] as String? ?? model['model_key'];
+    final desc = model['description'] as String? ?? '';
+
+    return InkWell(
+      onTap: (isActive || isSwitching || !canLoad || isPaid) ? null : onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          border: Border.all(
+            color: isActive ? Colors.blue : Colors.grey.shade300,
+            width: isActive ? 2 : 1,
+          ),
+          borderRadius: BorderRadius.circular(8),
+          color: isActive
+              ? Colors.blue.shade50
+              : isPaid
+                  ? Colors.grey.shade50
+                  : null,
+        ),
+        child: Row(
+          children: [
+            // Radio-like indicator
+            Container(
+              width: 20,
+              height: 20,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: isActive ? Colors.blue : Colors.grey.shade400,
+                  width: 2,
+                ),
+                color: isActive ? Colors.blue : Colors.transparent,
+              ),
+              child: isActive
+                  ? const Icon(Icons.check, size: 14, color: Colors.white)
+                  : null,
+            ),
+            const SizedBox(width: 12),
+            // Model info
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    name,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w500,
+                      fontSize: 14,
+                      color: isPaid ? Colors.grey : null,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    desc,
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                  ),
+                ],
+              ),
+            ),
+            // VRAM badge
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: canLoad
+                        ? Colors.green.shade100
+                        : Colors.red.shade100,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    vramMb > 0 ? '${(vramMb / 1000).toStringAsFixed(1)}GB' : 'Cloud',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      color:
+                          canLoad ? Colors.green.shade700 : Colors.red.shade700,
+                    ),
+                  ),
+                ),
+                if (!canLoad && !isPaid)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text('Too large',
+                        style: TextStyle(
+                            fontSize: 10, color: Colors.red.shade400)),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// --- Existing widgets ---
 
 class _SectionHeader extends StatelessWidget {
   final String title;
@@ -289,10 +566,9 @@ class _VRAMCard extends StatelessWidget {
             Wrap(
               spacing: 16,
               children: [
-                _VRAMLabel('System', modelStatus.systemReservedMb,
-                    Colors.orange),
                 _VRAMLabel(
-                    'Model', modelStatus.modelReservedMb, Colors.blue),
+                    'System', modelStatus.systemReservedMb, Colors.orange),
+                _VRAMLabel('Model', modelStatus.modelReservedMb, Colors.blue),
                 _VRAMLabel('Free', modelStatus.availableMb, Colors.green),
               ],
             ),
@@ -341,8 +617,8 @@ class _InfoRow extends StatelessWidget {
           SizedBox(
             width: 80,
             child: Text(label,
-                style: TextStyle(
-                    color: Colors.grey.shade600, fontSize: 13)),
+                style:
+                    TextStyle(color: Colors.grey.shade600, fontSize: 13)),
           ),
           Text(
             value,

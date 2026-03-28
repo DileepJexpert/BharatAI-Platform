@@ -151,6 +151,47 @@ def _register_core_routes(app: FastAPI) -> None:
         """List loaded models and VRAM usage."""
         return model_manager.status()
 
+    @app.get("/admin/available-models")
+    async def available_models() -> dict[str, Any]:
+        """List all available models that can be loaded."""
+        logger.info("[ROUTE] GET /admin/available-models")
+        models = model_manager.list_available_models()
+        return {
+            "models": models,
+            "active_model": model_manager.active_model_key,
+            "vram_status": model_manager.status(),
+        }
+
+    @app.post("/admin/switch-model")
+    async def switch_model(request: Request) -> dict[str, Any]:
+        """Switch the active model. Pulls from Ollama if not available locally."""
+        body = await request.json()
+        model_key = body.get("model_key")
+        if not model_key:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": "model_key is required"},
+            )
+
+        logger.info("[ROUTE] POST /admin/switch-model — switching to '%s'", model_key)
+
+        try:
+            status = model_manager.load(model_key)
+            logger.info("[ROUTE] Model switched to '%s' (tag=%s, vram=%dMB)", model_key, status.ollama_tag, status.vram_mb)
+            return {
+                "message": f"Switched to '{status.ollama_tag}'",
+                "model_key": status.model_key,
+                "ollama_tag": status.ollama_tag,
+                "vram_mb": status.vram_mb,
+                "pull_command": f"ollama pull {status.ollama_tag}",
+            }
+        except Exception as exc:
+            logger.error("[ROUTE] Model switch failed: %s", exc)
+            return JSONResponse(
+                status_code=400,
+                content={"detail": str(exc)},
+            )
+
     @app.post("/admin/load-model")
     async def load_model(request: Request) -> dict[str, Any]:
         """Load a specific model into VRAM (admin only)."""
