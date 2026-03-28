@@ -68,33 +68,59 @@ class LawyerAIPlugin(BasePlugin):
 
         @router.post("/ask")
         async def ask_legal_question(request: AskRequest) -> dict[str, Any]:
-            """Ask a legal question (for direct API use, outside voice pipeline)."""
-            # In production, this would call the LLM via pipeline.
-            # For MVP, this is a stub endpoint that records the query.
-            import uuid
-            query = {
-                "id": str(uuid.uuid4()),
-                "user_id": request.user_id,
-                "query_text": request.question,
-                "language": request.language,
-                "response_text": None,  # Would be filled by LLM
-                "sections_cited": None,
-                "severity": None,
-            }
-            _query_store.append(query)
-            return {
-                "message": "Query received. Use the /lawyer_ai/chat endpoint for AI responses.",
-                "query": query,
-            }
+            """Ask a legal question — saves to DB if available."""
+            try:
+                from core.db.base import get_session_factory
+                factory = get_session_factory()
+                async with factory() as session:
+                    from .repository import LawyerRepository
+                    repo = LawyerRepository(session)
+                    query = await repo.save_query(
+                        user_id=request.user_id,
+                        query_text=request.question,
+                        language=request.language,
+                    )
+                    await session.commit()
+                    return {
+                        "message": "Query saved. Use /lawyer_ai/chat for AI responses.",
+                        "query": {"id": str(query.id), "query_text": request.question},
+                    }
+            except Exception as exc:
+                logger.info("[LAWYER] DB not available (%s), using in-memory", exc)
+                import uuid
+                query = {
+                    "id": str(uuid.uuid4()),
+                    "user_id": request.user_id,
+                    "query_text": request.question,
+                    "language": request.language,
+                    "response_text": None,
+                    "sections_cited": None,
+                    "severity": None,
+                }
+                _query_store.append(query)
+                return {
+                    "message": "Query saved (in-memory). Use /lawyer_ai/chat for AI responses.",
+                    "query": query,
+                }
 
         @router.get("/queries")
         async def list_queries(user_id: str | None = None) -> dict[str, Any]:
-            """List recorded queries."""
-            if user_id:
-                queries = [q for q in _query_store if q.get("user_id") == user_id]
-            else:
-                queries = _query_store
-            return {"queries": queries, "count": len(queries)}
+            """List recorded queries — DB if available, else in-memory."""
+            try:
+                from core.db.base import get_session_factory
+                factory = get_session_factory()
+                async with factory() as session:
+                    from .repository import LawyerRepository
+                    repo = LawyerRepository(session)
+                    queries = await repo.list_queries(user_id=user_id)
+                    return {"queries": queries, "count": len(queries), "source": "database"}
+            except Exception as exc:
+                logger.info("[LAWYER] DB not available (%s), using in-memory", exc)
+                if user_id:
+                    queries = [q for q in _query_store if q.get("user_id") == user_id]
+                else:
+                    queries = _query_store
+                return {"queries": queries, "count": len(queries), "source": "memory"}
 
         return router
 

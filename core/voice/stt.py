@@ -9,7 +9,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-WHISPER_MODEL_SIZE: str = os.getenv("WHISPER_MODEL_SIZE", "medium")
+# IndicWhisper medium — optimised for Indian languages (Hindi, Tamil, Bengali, etc.)
+# Set WHISPER_MODEL_SIZE=medium to use generic Whisper instead
+WHISPER_MODEL_SIZE: str = os.getenv("WHISPER_MODEL_SIZE", "ai4bharat/indicwhisper-medium")
 WHISPER_DEVICE: str = os.getenv("WHISPER_DEVICE", "cuda")
 WHISPER_COMPUTE_TYPE: str = os.getenv("WHISPER_COMPUTE_TYPE", "float16")
 

@@ -142,14 +142,26 @@ class AshaHealthPlugin(BasePlugin):
 
         @router.get("/visits")
         async def list_visits(worker_id: str | None = None) -> dict[str, Any]:
-            """List visits, optionally filtered by worker_id."""
-            if worker_id:
-                visits = _get_visits_for_worker(worker_id)
-            else:
-                visits = []
-                for wid_visits in _visit_store.values():
-                    visits.extend(wid_visits)
-            return {"visits": visits, "count": len(visits)}
+            """List visits — uses DB if available, else in-memory."""
+            try:
+                from core.db.base import get_session_factory
+                factory = get_session_factory()
+                async with factory() as session:
+                    from .repository import AshaRepository
+                    repo = AshaRepository(session)
+                    import uuid as uuid_mod
+                    wid = uuid_mod.UUID(worker_id) if worker_id else None
+                    visits = await repo.list_visits(worker_id=wid)
+                    return {"visits": visits, "count": len(visits), "source": "database"}
+            except Exception as exc:
+                logger.info("[ASHA] DB not available (%s), using in-memory store", exc)
+                if worker_id:
+                    visits = _get_visits_for_worker(worker_id)
+                else:
+                    visits = []
+                    for wid_visits in _visit_store.values():
+                        visits.extend(wid_visits)
+                return {"visits": visits, "count": len(visits), "source": "memory"}
 
         @router.post("/confirm")
         async def confirm_visit(request: ConfirmVisitRequest) -> dict[str, Any]:
@@ -158,7 +170,27 @@ class AshaHealthPlugin(BasePlugin):
             worker_id = request.worker_id or "unknown"
             visit_date = visit_data.get("visit_date", date.today().isoformat())
 
-            # Duplicate check
+            # Try DB first
+            try:
+                from core.db.base import get_session_factory
+                factory = get_session_factory()
+                async with factory() as session:
+                    from .repository import AshaRepository
+                    repo = AshaRepository(session)
+                    visit = await repo.save_visit(
+                        visit_data=visit_data,
+                        raw_transcript=request.raw_transcript,
+                    )
+                    await session.commit()
+                    logger.info("[ASHA] Visit saved to DB: id=%s", visit.id)
+                    return {
+                        "message": "Visit saved to database",
+                        "visit": {"id": str(visit.id), **visit_data},
+                    }
+            except Exception as exc:
+                logger.info("[ASHA] DB not available (%s), saving to memory", exc)
+
+            # Fallback to in-memory
             is_dup = _check_duplicate(
                 worker_id,
                 visit_data.get("patient_name"),
@@ -175,17 +207,14 @@ class AshaHealthPlugin(BasePlugin):
                     "visit_data": visit_data,
                 }
 
-            # Save
             if request.raw_transcript:
                 visit_data["raw_transcript"] = request.raw_transcript
 
             saved = _save_visit(worker_id, visit_data)
-
-            # Queue for NHM sync (no-op in MVP)
             await self._nhm_client.sync_visit(saved)
 
             return {
-                "message": "Visit saved",
+                "message": "Visit saved (in-memory)",
                 "visit": saved,
             }
 

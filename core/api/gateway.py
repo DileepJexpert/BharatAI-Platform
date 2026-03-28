@@ -55,6 +55,43 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("  BHARATAI PLATFORM STARTING UP")
     logger.info("=" * 60)
 
+    # --- Init Database (optional — works without it) ---
+    db_available = False
+    try:
+        from core.db.base import init_db
+        logger.info("[STARTUP] Connecting to PostgreSQL...")
+        await init_db()
+        db_available = True
+        logger.info("[STARTUP] PostgreSQL connected")
+    except Exception as exc:
+        logger.warning("[STARTUP] PostgreSQL not available: %s", exc)
+        logger.warning("[STARTUP] Running without database — using in-memory storage")
+
+    # --- Check Redis (optional — falls back to in-memory) ---
+    redis_available = False
+    try:
+        logger.info("[STARTUP] Checking Redis connection...")
+        test_session = await session_store._get_redis()
+        await test_session.ping()
+        redis_available = True
+        logger.info("[STARTUP] Redis connected")
+    except Exception as exc:
+        logger.warning("[STARTUP] Redis not available: %s", exc)
+        logger.warning("[STARTUP] Running without Redis — sessions will use in-memory store")
+
+    # --- Check Ollama ---
+    ollama_available = False
+    try:
+        logger.info("[STARTUP] Checking Ollama connection...")
+        ollama_available = await ollama_client.is_healthy()
+        if ollama_available:
+            models = await ollama_client.list_models()
+            logger.info("[STARTUP] Ollama connected — models available: %s", models)
+        else:
+            logger.warning("[STARTUP] Ollama not responding at %s", ollama_client.base_url)
+    except Exception as exc:
+        logger.warning("[STARTUP] Ollama check failed: %s", exc)
+
     # Discover and load plugins
     try:
         logger.info("[STARTUP] Discovering plugins in 'apps/' folder...")
@@ -83,10 +120,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         session_store=session_store,
     )
 
-    logger.info("[STARTUP] Ollama URL: %s", ollama_client.base_url)
-    logger.info("[STARTUP] Redis URL: %s", os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+    logger.info("")
     logger.info("=" * 60)
     logger.info("  BHARATAI PLATFORM READY — http://localhost:8000")
+    logger.info("=" * 60)
+    logger.info("  PostgreSQL: %s", "CONNECTED" if db_available else "OFFLINE (in-memory)")
+    logger.info("  Redis:      %s", "CONNECTED" if redis_available else "OFFLINE (in-memory)")
+    logger.info("  Ollama:     %s", "CONNECTED" if ollama_available else "OFFLINE")
+    logger.info("  Plugins:    %s", list(registry.plugins.keys()))
     logger.info("=" * 60)
 
     yield
@@ -95,6 +136,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("[SHUTDOWN] BharatAI Platform shutting down...")
     await ollama_client.close()
     await session_store.close()
+    try:
+        from core.db.base import close_db
+        await close_db()
+    except Exception:
+        pass
     logger.info("[SHUTDOWN] Cleanup complete.")
 
 
@@ -137,13 +183,39 @@ def _register_core_routes(app: FastAPI) -> None:
 
     @app.get("/health")
     async def health_check() -> dict[str, Any]:
-        """Platform health check with model status."""
+        """Platform health check with dependency status."""
+        # Check each dependency
+        db_ok = False
+        try:
+            from core.db.base import get_engine
+            engine = get_engine()
+            async with engine.connect() as conn:
+                await conn.execute(__import__("sqlalchemy").text("SELECT 1"))
+            db_ok = True
+        except Exception:
+            pass
+
+        redis_ok = False
+        try:
+            redis = await session_store._get_redis()
+            await redis.ping()
+            redis_ok = True
+        except Exception:
+            pass
+
+        ollama_ok = await ollama_client.is_healthy()
+
         return {
             "status": "healthy",
             "platform": "BharatAI",
             "version": "1.0.0-mvp",
             "plugins_loaded": list(registry.plugins.keys()),
             "model_status": model_manager.status(),
+            "dependencies": {
+                "postgresql": "connected" if db_ok else "offline",
+                "redis": "connected" if redis_ok else "offline",
+                "ollama": "connected" if ollama_ok else "offline",
+            },
         }
 
     @app.get("/models")
