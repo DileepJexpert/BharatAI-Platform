@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("prompt")
 
 # Max conversation history turns to include
 MAX_HISTORY_TURNS: int = 5
@@ -27,6 +27,7 @@ def build_messages(
     messages: list[dict[str, str]] = [
         {"role": "system", "content": system_prompt},
     ]
+    logger.info("[PROMPT] System prompt: %s chars", len(system_prompt))
 
     # Add conversation history (trimmed to max turns)
     if conversation_history:
@@ -36,9 +37,14 @@ def build_messages(
             text = turn.get("text", "")
             if role in ("user", "assistant") and text:
                 messages.append({"role": role, "content": text})
+        logger.info("[PROMPT] Added %d history messages", len(recent))
+    else:
+        logger.info("[PROMPT] No conversation history (first message)")
 
     # Add current user message
     messages.append({"role": "user", "content": user_text})
+    logger.info("[PROMPT] User message: '%s'", user_text[:100])
+    logger.info("[PROMPT] Total messages being sent to Ollama: %d", len(messages))
 
     return messages
 
@@ -58,12 +64,15 @@ def build_system_prompt(
     Returns:
         Rendered system prompt string.
     """
+    logger.info("[PROMPT] Building system prompt with language=%s", language)
     context = {"language": language}
     if extra_context:
         context.update(extra_context)
 
     try:
-        return template.format(**context)
+        rendered = template.format(**context)
+        logger.info("[PROMPT] System prompt ready (%d chars)", len(rendered))
+        return rendered
     except KeyError as exc:
-        logger.warning("Prompt template has unresolved placeholder: %s", exc)
+        logger.warning("[PROMPT] Template has unresolved placeholder: %s", exc)
         return template.replace("{language}", language)

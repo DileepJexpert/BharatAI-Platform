@@ -5,20 +5,68 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("model_mgr")
 
 VRAM_BUDGET_MB: int = int(os.getenv("VRAM_BUDGET_MB", "7000"))
 
 MODEL_PROFILES: dict[str, dict[str, Any]] = {
+    # --- Free models (run locally via Ollama) ---
     "llama3.2:3b": {
         "vram_mb": 2400,
         "ollama_tag": "llama3.2:3b-instruct-q4_0",
-        "use": "default_mvp",
+        "display_name": "Llama 3.2 3B (Default)",
+        "description": "Best balance of speed and quality for Indian languages",
+        "category": "free",
     },
-    "llama3.2:8b": {
-        "vram_mb": 5200,
-        "ollama_tag": "llama3.2:8b-instruct-q4_0",
-        "use": "post_mvp_cloud",
+    "llama3.2:1b": {
+        "vram_mb": 1200,
+        "ollama_tag": "llama3.2:1b",
+        "display_name": "Llama 3.2 1B (Fast)",
+        "description": "Fastest responses, lower quality — good for testing",
+        "category": "free",
+    },
+    "phi3:mini": {
+        "vram_mb": 2300,
+        "ollama_tag": "phi3:mini",
+        "display_name": "Phi-3 Mini (Microsoft)",
+        "description": "Great at structured output and JSON — good for forms",
+        "category": "free",
+    },
+    "gemma2:2b": {
+        "vram_mb": 1800,
+        "ollama_tag": "gemma2:2b",
+        "display_name": "Gemma 2 2B (Google)",
+        "description": "Small and efficient, good multilingual support",
+        "category": "free",
+    },
+    "qwen2.5:3b": {
+        "vram_mb": 2200,
+        "ollama_tag": "qwen2.5:3b",
+        "display_name": "Qwen 2.5 3B (Alibaba)",
+        "description": "Strong multilingual model, good at following instructions",
+        "category": "free",
+    },
+    "mistral:7b": {
+        "vram_mb": 4500,
+        "ollama_tag": "mistral:7b",
+        "display_name": "Mistral 7B",
+        "description": "High quality but needs more VRAM — best for cloud/16GB GPU",
+        "category": "free",
+    },
+    # --- Paid/Cloud models (future) ---
+    "gpt-4o-mini": {
+        "vram_mb": 0,
+        "ollama_tag": "gpt-4o-mini",
+        "display_name": "GPT-4o Mini (OpenAI)",
+        "description": "Cloud API — fast and cheap, requires API key",
+        "category": "paid",
+    },
+    "claude-haiku": {
+        "vram_mb": 0,
+        "ollama_tag": "claude-haiku-4-5-20251001",
+        "display_name": "Claude Haiku (Anthropic)",
+        "description": "Cloud API — excellent quality, requires API key",
+        "category": "paid",
     },
 }
 
@@ -139,6 +187,24 @@ class ModelManager:
             logger.info("Model '%s' unloaded", self._active_model_key)
         self._active_model_key = None
         self._reserved_vram_mb = 0
+
+    def list_available_models(self) -> list[dict[str, Any]]:
+        """Return all available models with their profiles and compatibility info."""
+        models = []
+        for key, profile in MODEL_PROFILES.items():
+            can_fit = self.can_load(key) if profile["vram_mb"] > 0 else True
+            models.append({
+                "model_key": key,
+                "ollama_tag": profile["ollama_tag"],
+                "display_name": profile.get("display_name", key),
+                "description": profile.get("description", ""),
+                "category": profile.get("category", "free"),
+                "vram_mb": profile["vram_mb"],
+                "can_load": can_fit,
+                "is_active": key == self._active_model_key,
+            })
+        logger.info("[MODEL] Listed %d available models", len(models))
+        return models
 
     def status(self) -> dict[str, Any]:
         """Return current model and VRAM status for /health endpoint."""

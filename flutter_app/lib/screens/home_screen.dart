@@ -26,14 +26,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final pages = [
-      const ChatScreen(),
-      const AdminDashboard(),
-      const SettingsScreen(),
-    ];
-
     return Scaffold(
-      body: pages[_selectedIndex],
+      body: IndexedStack(
+        index: _selectedIndex,
+        children: const [
+          ChatScreen(),
+          AdminDashboard(),
+          SettingsScreen(),
+        ],
+      ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
         onDestinationSelected: (index) {

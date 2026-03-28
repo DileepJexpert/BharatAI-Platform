@@ -8,7 +8,7 @@ from typing import Any
 
 import redis.asyncio as aioredis
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("session")
 
 SESSION_TTL_SECONDS: int = int(os.getenv("SESSION_TTL_SECONDS", "1800"))  # 30 min
 MAX_CONVERSATION_TURNS: int = 5
@@ -37,12 +37,16 @@ class SessionStore:
 
         Refreshes TTL on access.
         """
+        logger.info("[SESSION] Getting session: %s", session_id[:30])
         redis = await self._get_redis()
         raw = await redis.get(self._key(session_id))
         if raw is None:
+            logger.info("[SESSION] Session not found (new user)")
             return None
 
         data = json.loads(raw)
+        turns = len(data.get("conversation_history", []))
+        logger.info("[SESSION] Session loaded: app=%s, language=%s, history_turns=%d", data.get("app_id"), data.get("language"), turns)
         # Refresh TTL on access
         await redis.expire(self._key(session_id), SESSION_TTL_SECONDS)
         data["last_active"] = datetime.now(timezone.utc).isoformat()
@@ -81,6 +85,7 @@ class SessionStore:
         language: str = "hi",
     ) -> dict[str, Any]:
         """Create a new session with default schema."""
+        logger.info("[SESSION] Creating new session: id=%s, app=%s, lang=%s", session_id[:30], app_id, language)
         now = datetime.now(timezone.utc).isoformat()
         session = {
             "session_id": session_id,
@@ -119,6 +124,11 @@ class SessionStore:
             "role": role,
             "text": text,
         })
+
+        turns = len(data["conversation_history"])
+        logger.info("[SESSION] Added turn: role=%s, total_turns=%d (max=%d)", role, turns, MAX_CONVERSATION_TURNS * 2)
+        if turns > MAX_CONVERSATION_TURNS * 2:
+            logger.info("[SESSION] Trimming old turns to keep last %d", MAX_CONVERSATION_TURNS * 2)
 
         await self.save(session_id, data)
         return data

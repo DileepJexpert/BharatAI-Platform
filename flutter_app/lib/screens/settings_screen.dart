@@ -236,8 +236,8 @@ class _QuickUrlTile extends StatelessWidget {
 
 class _KeyRow extends StatelessWidget {
   final String app;
-  final String key;
-  const _KeyRow(this.app, this.key);
+  final String apiKey;
+  const _KeyRow(this.app, this.apiKey);
 
   @override
   Widget build(BuildContext context) {
@@ -249,7 +249,7 @@ class _KeyRow extends StatelessWidget {
             width: 100,
             child: Text(app, style: const TextStyle(fontSize: 13)),
           ),
-          Text(key,
+          Text(apiKey,
               style: TextStyle(
                   fontSize: 12,
                   fontFamily: 'monospace',

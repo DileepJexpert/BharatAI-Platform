@@ -15,7 +15,7 @@ from core.voice.session_store import SessionStore
 from core.voice.stt import STTService
 from core.voice.tts import TTSService
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pipeline")
 
 
 class PipelineError(Exception):
@@ -179,9 +179,12 @@ class VoicePipeline:
             VoiceResponse (without audio).
         """
         start_time = time.monotonic()
+        logger.info("[CHAT] === New text request: app=%s session=%s ===", app_id, session_id)
+        logger.info("[CHAT] User text: %s", text[:200])
 
         plugin = self.registry.get(app_id)
         if plugin is None:
+            logger.error("[CHAT] Unknown app: %s", app_id)
             return VoiceResponse(
                 session_id=session_id,
                 error="unknown_app",
@@ -189,13 +192,16 @@ class VoicePipeline:
             )
 
         # Detect language
+        logger.info("[CHAT] Step 1: Detecting language...")
         if language_hint:
             language = language_hint
         else:
             lang_result = await detect_language(text)
             language = lang_result.language_code
+        logger.info("[CHAT] Language detected: %s (%dms)", language, self._elapsed_ms(start_time))
 
         # Get/create session
+        logger.info("[CHAT] Step 2: Getting/creating session...")
         session = await self.session_store.get(session_id)
         if session is None:
             session = await self.session_store.create(
@@ -203,20 +209,29 @@ class VoicePipeline:
                 app_id=app_id,
                 language=language,
             )
+            logger.info("[CHAT] New session created (%dms)", self._elapsed_ms(start_time))
+        else:
+            logger.info("[CHAT] Existing session loaded (%dms)", self._elapsed_ms(start_time))
 
         system_prompt = plugin.system_prompt(language, session)
+        logger.info("[CHAT] Step 3: Calling LLM (this may take a while)...")
 
         # LLM with retry
         parsed = await self._llm_with_retry(
             plugin, system_prompt, text, session, start_time, session_id
         )
         if isinstance(parsed, VoiceResponse):
+            logger.error("[CHAT] LLM failed after %dms: %s", self._elapsed_ms(start_time), parsed.error)
             return parsed
+
+        logger.info("[CHAT] LLM responded in %dms", self._elapsed_ms(start_time))
 
         # Update session
         await self.session_store.add_turn(session_id, "user", text)
         response_text = parsed.get("response_text") or parsed.get("confirmation_message", "")
         await self.session_store.add_turn(session_id, "assistant", response_text)
+        logger.info("[CHAT] Response: %s", response_text[:200])
+        logger.info("[CHAT] === Done in %dms ===", self._elapsed_ms(start_time))
 
         return VoiceResponse(
             session_id=session_id,

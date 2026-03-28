@@ -12,7 +12,7 @@ from core.llm.prompt_builder import build_system_prompt
 
 from .prompts import SYSTEM_PROMPT
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("lawyer_ai")
 
 
 # --- Pydantic models ---
@@ -44,14 +44,23 @@ class LawyerAIPlugin(BasePlugin):
 
     def parse_response(self, llm_output: str, context: dict[str, Any]) -> dict[str, Any]:
         """Parse LLM JSON output into structured legal response."""
-        cleaned = _strip_markdown(llm_output)
-        data = json.loads(cleaned)
+        logger.info("[LAWYER] Raw LLM output: %s", llm_output[:500])
 
-        # Ensure response_text exists
-        if not data.get("response_text"):
-            data["response_text"] = data.get("answer", "")
+        # The model now responds conversationally — just return the text
+        # It may or may not include structured legal data
+        response_text = llm_output.strip()
 
-        return data
+        # Try to extract any structured legal JSON if present
+        data = _extract_json(llm_output)
+        if data and (data.get("sections_cited") or data.get("severity")):
+            logger.info("[LAWYER] Legal data found: sections=%s", data.get("sections_cited"))
+            # Strip JSON from conversational text
+            clean_text = _strip_json_block(llm_output).strip()
+            data["response_text"] = clean_text or data.get("answer", response_text)
+            return data
+
+        logger.info("[LAWYER] Conversational response")
+        return {"response_text": response_text}
 
     def router(self) -> APIRouter:
         """Return Lawyer AI specific routes."""
@@ -106,3 +115,41 @@ def _strip_markdown(text: str) -> str:
         lines = [l for l in lines if not l.strip().startswith("```")]
         cleaned = "\n".join(lines)
     return cleaned
+
+
+def _strip_json_block(text: str) -> str:
+    """Remove JSON blocks from text to get conversational part."""
+    import re
+    cleaned = re.sub(r'```json\s*\{[^`]*\}\s*```', '', text, flags=re.DOTALL)
+    cleaned = re.sub(r'```\s*\{[^`]*\}\s*```', '', cleaned, flags=re.DOTALL)
+    lines = cleaned.split('\n')
+    non_json_lines = []
+    in_json = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith('{'):
+            in_json = True
+        if not in_json:
+            non_json_lines.append(line)
+        if in_json and stripped.endswith('}'):
+            in_json = False
+    return '\n'.join(non_json_lines).strip()
+
+
+def _extract_json(text: str) -> dict[str, Any] | None:
+    """Try to extract a JSON object from mixed text."""
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[start:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None

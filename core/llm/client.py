@@ -7,10 +7,10 @@ from dataclasses import dataclass
 
 import httpx
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("llm")
 
 OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_TIMEOUT_SECONDS: float = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "30"))
+OLLAMA_TIMEOUT_SECONDS: float = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
 
 
 class OllamaConnectionError(Exception):
@@ -103,18 +103,30 @@ class OllamaClient:
             "stream": False,
         }
 
+        logger.info("[LLM] >>> Sending request to Ollama")
+        logger.info("[LLM]     URL: %s/api/chat", self.base_url)
+        logger.info("[LLM]     Model: %s", model)
+        logger.info("[LLM]     System prompt: %d chars", len(system))
+        logger.info("[LLM]     User message: '%s'", user[:150])
+        logger.info("[LLM]     Timeout: %ss", self.timeout)
+        logger.info("[LLM]     Waiting for Ollama response...")
         try:
             response = await client.post("/api/chat", json=payload)
         except httpx.TimeoutException as exc:
+            logger.error("[LLM] !!! TIMEOUT after %ss — model may be loading or overloaded", self.timeout)
             raise OllamaTimeoutError(
                 f"Ollama request timed out after {self.timeout}s"
             ) from exc
         except httpx.ConnectError as exc:
+            logger.error("[LLM] !!! CONNECTION FAILED — is Ollama running? URL: %s", self.base_url)
             raise OllamaConnectionError(
                 f"Cannot connect to Ollama at {self.base_url}: {exc}"
             ) from exc
 
+        logger.info("[LLM]     Ollama responded with HTTP %d", response.status_code)
+
         if response.status_code == 404:
+            logger.error("[LLM] !!! Model '%s' not found — run: ollama pull %s", model, model)
             raise OllamaModelNotLoadedError(
                 f"Model '{model}' not found in Ollama. Pull it first: ollama pull {model}"
             )
@@ -131,13 +143,18 @@ class OllamaClient:
 
         message = data.get("message", {})
 
-        return LLMResponse(
+        result = LLMResponse(
             text=message.get("content", ""),
             model=data.get("model", model),
             total_duration_ms=data.get("total_duration", 0) // 1_000_000,
             prompt_eval_count=data.get("prompt_eval_count", 0),
             eval_count=data.get("eval_count", 0),
         )
+        logger.info(
+            "[LLM] Response received: %dms, prompt_tokens=%d, eval_tokens=%d",
+            result.total_duration_ms, result.prompt_eval_count, result.eval_count,
+        )
+        return result
 
     async def is_healthy(self) -> bool:
         """Check if Ollama is reachable."""

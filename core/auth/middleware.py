@@ -10,7 +10,7 @@ from fastapi.security import APIKeyHeader
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("auth")
 
 # Header scheme for dependency injection
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -53,6 +53,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         path = request.url.path
+        method = request.method
+
+        # Skip auth for CORS preflight requests
+        if method == "OPTIONS":
+            logger.info("[AUTH] %s %s — CORS preflight, skipping auth", method, path)
+            return await call_next(request)
 
         # Skip auth for public paths
         if path in PUBLIC_PATHS or path.startswith("/docs") or path.startswith("/redoc"):
@@ -60,11 +66,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Also skip for /models (read-only info) and /webhook (Twilio)
         if path == "/models" or path.startswith("/webhook"):
+            logger.info("[AUTH] %s %s — public route, skipping auth", method, path)
             return await call_next(request)
 
         # Extract API key
         api_key = request.headers.get("X-API-Key")
         if not api_key:
+            logger.warning("[AUTH] %s %s — REJECTED: no X-API-Key header", method, path)
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Missing X-API-Key header"},
@@ -73,12 +81,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Validate key
         api_keys = self.api_keys
         if api_key not in api_keys:
+            logger.warning("[AUTH] %s %s — REJECTED: invalid API key '%s...'", method, path, api_key[:10])
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Invalid API key"},
             )
 
         app_id_from_key = api_keys[api_key]
+        logger.info("[AUTH] %s %s — API key valid, app=%s", method, path, app_id_from_key)
 
         # Check app_id isolation: if path starts with /{app_id}/,
         # the key must belong to that app
@@ -89,6 +99,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if requested_app_id != app_id_from_key and requested_app_id not in (
                 "admin", "health", "models"
             ):
+                logger.warning("[AUTH] %s %s — REJECTED: key for '%s' cannot access '%s'", method, path, app_id_from_key, requested_app_id)
                 return JSONResponse(
                     status_code=403,
                     content={
@@ -99,6 +110,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         # Rate limiting
         if self._is_rate_limited(api_key):
+            logger.warning("[AUTH] %s %s — RATE LIMITED: app=%s", method, path, app_id_from_key)
             return JSONResponse(
                 status_code=429,
                 content={"detail": "Rate limit exceeded. Try again later."},
