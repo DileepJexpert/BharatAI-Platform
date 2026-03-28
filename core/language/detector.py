@@ -4,7 +4,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("language")
 
 # Unicode ranges for Indian scripts
 SCRIPT_RANGES: dict[str, tuple[int, int]] = {
@@ -92,7 +92,9 @@ async def detect(text: str) -> LanguageResult:
     Returns:
         LanguageResult with language_code, confidence, and mixed_script flag.
     """
+    logger.info("[LANG] Detecting language for: '%s'", text[:80] if text else "(empty)")
     if not text or not text.strip():
+        logger.info("[LANG] Empty text — defaulting to Hindi")
         return LanguageResult(language_code="hi", confidence=0.0, mixed_script=False)
 
     text = text.strip()
@@ -100,12 +102,17 @@ async def detect(text: str) -> LanguageResult:
     has_latin = _has_latin(text)
     total_script_chars = sum(script_counts.values())
 
+    if script_counts:
+        logger.info("[LANG] Script analysis: %s (latin=%s)", script_counts, has_latin)
+
     # Pure Latin text (no Indian scripts detected) — default to Hindi (Hinglish)
     if total_script_chars == 0 and has_latin:
+        logger.info("[LANG] Result: English/Hinglish (Latin script only), confidence=0.5")
         return LanguageResult(language_code="hi", confidence=0.5, mixed_script=True)
 
     # No recognisable characters at all
     if total_script_chars == 0:
+        logger.info("[LANG] Result: Unknown — defaulting to Hindi, confidence=0.1")
         return LanguageResult(language_code="hi", confidence=0.1, mixed_script=False)
 
     # Find dominant script
@@ -131,8 +138,10 @@ async def detect(text: str) -> LanguageResult:
     if mixed_script:
         confidence *= 0.8
 
-    return LanguageResult(
+    result = LanguageResult(
         language_code=lang,
         confidence=round(min(confidence, 1.0), 2),
         mixed_script=mixed_script,
     )
+    logger.info("[LANG] Result: language=%s, confidence=%.2f, mixed=%s, script=%s", result.language_code, result.confidence, result.mixed_script, dominant_script)
+    return result

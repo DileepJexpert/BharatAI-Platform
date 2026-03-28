@@ -15,7 +15,7 @@ from core.voice.session_store import SessionStore
 from core.voice.stt import STTService
 from core.voice.tts import TTSService
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("pipeline")
 
 
 class PipelineError(Exception):

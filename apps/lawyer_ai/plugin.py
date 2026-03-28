@@ -12,7 +12,7 @@ from core.llm.prompt_builder import build_system_prompt
 
 from .prompts import SYSTEM_PROMPT
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("lawyer_ai")
 
 
 # --- Pydantic models ---

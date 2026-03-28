@@ -2,6 +2,7 @@
 
 import logging
 import os
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
@@ -9,6 +10,15 @@ from typing import Any, AsyncGenerator
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Configure logging to show everything in console
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stdout,
+    force=True,
+)
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +34,7 @@ from core.voice.session_store import SessionStore
 from core.voice.stt import STTService
 from core.voice.tts import TTSService
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("gateway")
 
 # Module-level singletons
 registry = PluginRegistry()
@@ -41,24 +51,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan: startup and shutdown."""
     global pipeline
 
-    logger.info("BharatAI Platform starting...")
+    logger.info("=" * 60)
+    logger.info("  BHARATAI PLATFORM STARTING UP")
+    logger.info("=" * 60)
 
     # Discover and load plugins
     try:
+        logger.info("[STARTUP] Discovering plugins in 'apps/' folder...")
         registry.discover_and_load("apps")
         registry.startup_all()
-        logger.info("Loaded plugins: %s", list(registry.plugins.keys()))
+        logger.info("[STARTUP] Plugins loaded: %s", list(registry.plugins.keys()))
     except Exception as exc:
-        logger.warning("Plugin loading: %s", exc)
+        logger.warning("[STARTUP] Plugin loading warning: %s", exc)
 
     # Load default LLM model
     try:
+        logger.info("[STARTUP] Loading default LLM model configuration...")
         model_manager.load()
-        logger.info("Default model loaded: %s", model_manager.active_model)
+        logger.info("[STARTUP] Default model set: %s", model_manager.active_model)
     except Exception as exc:
-        logger.warning("Model load deferred: %s", exc)
+        logger.warning("[STARTUP] Model load deferred: %s", exc)
 
     # Create voice pipeline
+    logger.info("[STARTUP] Creating voice pipeline (STT + LLM + TTS)...")
     pipeline = VoicePipeline(
         stt=stt_service,
         tts=tts_service,
@@ -68,12 +83,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         session_store=session_store,
     )
 
+    logger.info("[STARTUP] Ollama URL: %s", ollama_client.base_url)
+    logger.info("[STARTUP] Redis URL: %s", os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+    logger.info("=" * 60)
+    logger.info("  BHARATAI PLATFORM READY — http://localhost:8000")
+    logger.info("=" * 60)
+
     yield
 
     # Shutdown
-    logger.info("BharatAI Platform shutting down...")
+    logger.info("[SHUTDOWN] BharatAI Platform shutting down...")
     await ollama_client.close()
     await session_store.close()
+    logger.info("[SHUTDOWN] Cleanup complete.")
 
 
 def create_app() -> FastAPI:
@@ -166,6 +188,7 @@ def _register_core_routes(app: FastAPI) -> None:
         language_hint: str = Form(default=""),
     ) -> dict[str, Any]:
         """Upload audio, get text + audio response."""
+        logger.info("[ROUTE] POST /%s/voice — audio upload received", app_id)
         if pipeline is None:
             raise HTTPException(503, "Pipeline not initialized")
 
@@ -173,6 +196,7 @@ def _register_core_routes(app: FastAPI) -> None:
             session_id = str(uuid.uuid4())
 
         audio_bytes = await audio.read()
+        logger.info("[ROUTE] Audio size: %d bytes, session=%s", len(audio_bytes), session_id)
 
         # Check audio size
         max_size = 10 * 1024 * 1024  # 10MB
@@ -186,13 +210,17 @@ def _register_core_routes(app: FastAPI) -> None:
             language_hint=language_hint or None,
         )
 
-        return _voice_response_to_dict(result, session_id)
+        response = _voice_response_to_dict(result, session_id)
+        logger.info("[ROUTE] Voice response: error=%s, processing_ms=%s", response.get("error"), response.get("processing_ms"))
+        return response
 
     # --- Chat endpoint (text-only) ---
 
     @app.post("/{app_id}/chat")
     async def chat_endpoint(app_id: str, request: ChatRequest) -> dict[str, Any]:
         """Text-only input, returns text response."""
+        logger.info("[ROUTE] >>> POST /%s/chat — text: '%s'", app_id, request.text[:100])
+        logger.info("[ROUTE] Session: %s, Language hint: %s", request.session_id, request.language_hint)
         if pipeline is None:
             raise HTTPException(503, "Pipeline not initialized")
 
@@ -203,7 +231,9 @@ def _register_core_routes(app: FastAPI) -> None:
             language_hint=request.language_hint,
         )
 
-        return _voice_response_to_dict(result, request.session_id)
+        response = _voice_response_to_dict(result, request.session_id)
+        logger.info("[ROUTE] <<< Chat response: error=%s, processing_ms=%s", response.get("error"), response.get("processing_ms"))
+        return response
 
     # --- Session endpoints ---
 
