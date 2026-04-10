@@ -27,7 +27,9 @@ from fastapi.responses import JSONResponse
 from core.api.plugin_registry import PluginRegistry
 from core.auth.middleware import AuthMiddleware
 from core.llm.client import OllamaClient
+from core.llm.config_store import ModelConfigStore
 from core.llm.model_manager import ModelManager
+from core.llm.router import AppModelConfig, LLMRouter
 from core.voice.models import ChatRequest, ChatResponse, VoiceResponse
 from core.voice.pipeline import VoicePipeline
 from core.voice.session_store import SessionStore
@@ -43,6 +45,8 @@ stt_service = STTService()
 tts_service = TTSService()
 ollama_client = OllamaClient()
 session_store = SessionStore()
+llm_router = LLMRouter()
+config_store = ModelConfigStore()
 pipeline: VoicePipeline | None = None
 
 
@@ -91,6 +95,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.warning("[STARTUP] Ollama not responding at %s", ollama_client.base_url)
     except Exception as exc:
         logger.warning("[STARTUP] Ollama check failed: %s", exc)
+
+    # --- Register LLM Providers ---
+    logger.info("[STARTUP] Registering LLM providers...")
+    await _register_llm_providers(ollama_available)
 
     # Discover and load plugins
     try:
@@ -141,8 +149,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.warning("[STARTUP] Task runner init failed: %s", exc)
 
-    # Create voice pipeline
-    logger.info("[STARTUP] Creating voice pipeline (STT + LLM + TTS)...")
+    # Create voice pipeline (with multi-provider LLM router)
+    logger.info("[STARTUP] Creating voice pipeline (STT + LLM Router + TTS)...")
     pipeline = VoicePipeline(
         stt=stt_service,
         tts=tts_service,
@@ -150,6 +158,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         model_manager=model_manager,
         registry=registry,
         session_store=session_store,
+        llm_router=llm_router,
     )
 
     logger.info("")
@@ -161,6 +170,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("  Ollama:     %s", "CONNECTED" if ollama_available else "OFFLINE")
     logger.info("  ChromaDB:   %s", "CONNECTED" if chroma_available else "OFFLINE (no RAG)")
     logger.info("  Plugins:    %s", list(registry.plugins.keys()))
+    logger.info("")
+    logger.info("  [LLM Providers]")
+    for name, prov in llm_router.providers.items():
+        locality = "LOCAL GPU" if name in ("ollama", "openai_compatible") else "CLOUD API"
+        models_list = prov.list_models()
+        logger.info("    ✅ %-16s — %s — models: %s", name, locality, ", ".join(models_list[:4]) or "auto")
+    # Show unconfigured providers
+    for name in ("ollama", "groq", "gemini", "claude", "sarvam"):
+        if name not in llm_router.providers:
+            logger.info("    ❌ %-16s — NO API KEY", name)
+    logger.info("")
+    logger.info("  [App Model Config]")
+    configs = llm_router.get_all_configs()
+    default_cfg = configs.get("default", {})
+    for app_id in registry.plugins:
+        if app_id in configs:
+            cfg = configs[app_id]
+            fb_str = " → ".join(f"{f['provider']}" for f in cfg.get("fallback_chain", []))
+            logger.info("    %-16s → %s/%s%s", app_id, cfg["provider"], cfg["model"], f" (fallback: {fb_str})" if fb_str else "")
+        else:
+            if default_cfg:
+                logger.info("    %-16s → default (%s/%s)", app_id, default_cfg.get("provider", "?"), default_cfg.get("model", "?"))
+            else:
+                logger.info("    %-16s → default", app_id)
     logger.info("=" * 60)
 
     yield
@@ -171,6 +204,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await scraper_scheduler.stop()
     if task_runner:
         await task_runner.stop()
+    await llm_router.close()
     await ollama_client.close()
     await session_store.close()
     try:
@@ -179,6 +213,57 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         pass
     logger.info("[SHUTDOWN] Cleanup complete.")
+
+
+async def _register_llm_providers(ollama_available: bool) -> None:
+    """Auto-register LLM providers based on available API keys."""
+    from core.llm.providers.ollama_provider import OllamaProvider
+    from core.llm.providers.groq_provider import GroqProvider
+    from core.llm.providers.gemini_provider import GeminiProvider
+    from core.llm.providers.claude_provider import ClaudeProvider
+    from core.llm.providers.sarvam_provider import SarvamProvider
+    from core.llm.providers.openai_compatible_provider import OpenAICompatibleProvider
+
+    # Always register Ollama (local)
+    ollama_prov = OllamaProvider()
+    if ollama_available:
+        await ollama_prov.refresh_models()
+    llm_router.register_provider(ollama_prov)
+
+    # Register cloud providers if API keys are set
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    if groq_key:
+        llm_router.register_provider(GroqProvider(api_key=groq_key))
+        logger.info("[STARTUP] Groq provider registered")
+
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    if gemini_key:
+        llm_router.register_provider(GeminiProvider(api_key=gemini_key))
+        logger.info("[STARTUP] Gemini provider registered")
+
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if anthropic_key:
+        llm_router.register_provider(ClaudeProvider(api_key=anthropic_key))
+        logger.info("[STARTUP] Claude provider registered")
+
+    sarvam_key = os.getenv("SARVAM_API_KEY", "")
+    if sarvam_key:
+        llm_router.register_provider(SarvamProvider(api_key=sarvam_key))
+        logger.info("[STARTUP] Sarvam provider registered")
+
+    openai_base = os.getenv("OPENAI_API_BASE", "")
+    if openai_base:
+        llm_router.register_provider(OpenAICompatibleProvider(api_base=openai_base))
+        logger.info("[STARTUP] OpenAI-compatible provider registered (%s)", openai_base)
+
+    # Set default config from environment
+    default_config = config_store.get_default_config()
+    llm_router.set_default_config(default_config)
+
+    # Load saved configs from Redis/DB into the router
+    await config_store.load_all_to_router(llm_router)
+
+    logger.info("[STARTUP] LLM Router ready: %d providers registered", len(llm_router.providers))
 
 
 def create_app() -> FastAPI:
@@ -208,6 +293,11 @@ def create_app() -> FastAPI:
     # Register WhatsApp webhook
     from core.integrations.whatsapp import router as whatsapp_router
     app.include_router(whatsapp_router)
+
+    # Register admin LLM management routes
+    from core.api.admin_llm import create_admin_llm_router
+    admin_llm_router = create_admin_llm_router(llm_router, config_store)
+    app.include_router(admin_llm_router)
 
     # Register plugin routes
     _register_plugin_routes(app)

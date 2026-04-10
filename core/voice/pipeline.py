@@ -10,6 +10,7 @@ from core.language.detector import detect as detect_language
 from core.llm.client import OllamaClient
 from core.llm.model_manager import ModelManager, ModelNotLoadedError
 from core.llm.prompt_builder import build_messages, build_system_prompt
+from core.llm.router import LLMRouter
 from core.voice.models import VoiceResponse
 from core.voice.session_store import SessionStore
 from core.voice.stt import STTService
@@ -44,6 +45,7 @@ class VoicePipeline:
         model_manager: ModelManager,
         registry: PluginRegistry,
         session_store: SessionStore,
+        llm_router: LLMRouter | None = None,
     ) -> None:
         self.stt = stt
         self.tts = tts
@@ -51,6 +53,7 @@ class VoicePipeline:
         self.model_manager = model_manager
         self.registry = registry
         self.session_store = session_store
+        self.llm_router = llm_router
 
     async def process(
         self,
@@ -132,9 +135,10 @@ class VoicePipeline:
 
         system_prompt = plugin.system_prompt(language, session)
 
-        # Step 4 — LLM inference with retry
+        # Step 4 — LLM inference with retry (routes to correct provider via LLMRouter)
         parsed = await self._llm_with_retry(
-            plugin, system_prompt, transcript.text, session, start_time, session_id
+            plugin, system_prompt, transcript.text, session, start_time, session_id,
+            app_id=app_id,
         )
         if isinstance(parsed, VoiceResponse):
             # _llm_with_retry returned an error response
@@ -216,9 +220,10 @@ class VoicePipeline:
         system_prompt = plugin.system_prompt(language, session)
         logger.info("[CHAT] Step 3: Calling LLM (this may take a while)...")
 
-        # LLM with retry
+        # LLM with retry (routes to correct provider via LLMRouter)
         parsed = await self._llm_with_retry(
-            plugin, system_prompt, text, session, start_time, session_id
+            plugin, system_prompt, text, session, start_time, session_id,
+            app_id=app_id,
         )
         if isinstance(parsed, VoiceResponse):
             logger.error("[CHAT] LLM failed after %dms: %s", self._elapsed_ms(start_time), parsed.error)
@@ -251,33 +256,51 @@ class VoicePipeline:
         session: dict,
         start_time: float,
         session_id: str,
+        app_id: str | None = None,
     ) -> dict | VoiceResponse:
         """Call LLM and parse response, retrying once on JSON errors.
 
+        Uses LLMRouter if available (multi-provider), otherwise falls back
+        to direct OllamaClient.
+
         Returns parsed dict on success, or VoiceResponse on failure.
         """
-        try:
-            active_model = self.model_manager.active_model
-        except ModelNotLoadedError:
-            return VoiceResponse(
-                session_id=session_id,
-                error="model_not_loaded",
-                response_text="The AI model is not ready yet. Please try again shortly.",
-                processing_ms=self._elapsed_ms(start_time),
-            )
+        # Determine if we can use the router
+        use_router = self.llm_router is not None and app_id is not None
+
+        if not use_router:
+            try:
+                active_model = self.model_manager.active_model
+            except ModelNotLoadedError:
+                return VoiceResponse(
+                    session_id=session_id,
+                    error="model_not_loaded",
+                    response_text="The AI model is not ready yet. Please try again shortly.",
+                    processing_ms=self._elapsed_ms(start_time),
+                )
 
         history = session.get("conversation_history", [])
         messages = build_messages(system_prompt, user_text, history)
 
         for attempt in range(self.LLM_RETRY_LIMIT + 1):
             try:
-                llm_response = await self.llm.chat(
-                    system=system_prompt,
-                    user=user_text,
-                    model=active_model,
-                )
+                if use_router:
+                    router_response = await self.llm_router.chat(app_id, messages)
+                    llm_text = router_response.text
+                    logger.info(
+                        "LLM via router: provider=%s model=%s latency=%dms fallback=%s",
+                        router_response.provider, router_response.model,
+                        router_response.latency_ms, router_response.fallback,
+                    )
+                else:
+                    llm_response = await self.llm.chat(
+                        system=system_prompt,
+                        user=user_text,
+                        model=active_model,
+                    )
+                    llm_text = llm_response.text
 
-                parsed = plugin.parse_response(llm_response.text, session)
+                parsed = plugin.parse_response(llm_text, session)
                 return parsed
 
             except (json.JSONDecodeError, KeyError, ValueError) as exc:
