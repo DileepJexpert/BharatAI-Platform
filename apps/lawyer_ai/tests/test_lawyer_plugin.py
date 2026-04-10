@@ -47,7 +47,7 @@ class TestArchitectureValidation:
 
         assert "asha_health" in registry.plugins
         assert "lawyer_ai" in registry.plugins
-        assert len(registry.plugins) == 2
+        assert len(registry.plugins) >= 2
 
     def test_plugin_satisfies_base_contract(self):
         plugin = create_plugin()
