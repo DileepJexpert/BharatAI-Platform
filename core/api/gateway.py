@@ -109,6 +109,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as exc:
         logger.warning("[STARTUP] Model load deferred: %s", exc)
 
+    # --- Init ChromaDB (optional — RAG unavailable without it) ---
+    chroma_available = False
+    try:
+        from core.db.chroma_client import ChromaClient
+        chroma_client = ChromaClient()
+        chroma_client.connect()
+        chroma_available = chroma_client.is_connected
+        if chroma_available:
+            logger.info("[STARTUP] ChromaDB connected")
+        else:
+            logger.warning("[STARTUP] ChromaDB not available — RAG search disabled")
+    except Exception as exc:
+        logger.warning("[STARTUP] ChromaDB init failed: %s", exc)
+
+    # --- Init Scraper Scheduler (optional — runs registered scrapers) ---
+    scraper_scheduler = None
+    try:
+        from core.scraper.scheduler import ScraperScheduler
+        scraper_scheduler = ScraperScheduler()
+        logger.info("[STARTUP] Scraper scheduler initialized")
+    except Exception as exc:
+        logger.warning("[STARTUP] Scraper scheduler init failed: %s", exc)
+
+    # --- Init Task Runner (optional — runs registered background tasks) ---
+    task_runner = None
+    try:
+        from core.scheduler.runner import TaskRunner
+        task_runner = TaskRunner()
+        logger.info("[STARTUP] Task runner initialized")
+    except Exception as exc:
+        logger.warning("[STARTUP] Task runner init failed: %s", exc)
+
     # Create voice pipeline
     logger.info("[STARTUP] Creating voice pipeline (STT + LLM + TTS)...")
     pipeline = VoicePipeline(
@@ -127,6 +159,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("  PostgreSQL: %s", "CONNECTED" if db_available else "OFFLINE (in-memory)")
     logger.info("  Redis:      %s", "CONNECTED" if redis_available else "OFFLINE (in-memory)")
     logger.info("  Ollama:     %s", "CONNECTED" if ollama_available else "OFFLINE")
+    logger.info("  ChromaDB:   %s", "CONNECTED" if chroma_available else "OFFLINE (no RAG)")
     logger.info("  Plugins:    %s", list(registry.plugins.keys()))
     logger.info("=" * 60)
 
@@ -134,6 +167,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     logger.info("[SHUTDOWN] BharatAI Platform shutting down...")
+    if scraper_scheduler:
+        await scraper_scheduler.stop()
+    if task_runner:
+        await task_runner.stop()
     await ollama_client.close()
     await session_store.close()
     try:
@@ -205,6 +242,14 @@ def _register_core_routes(app: FastAPI) -> None:
 
         ollama_ok = await ollama_client.is_healthy()
 
+        chroma_ok = False
+        try:
+            from core.db.chroma_client import ChromaClient
+            # Check module-level state if available
+            chroma_ok = chroma_available
+        except Exception:
+            pass
+
         return {
             "status": "healthy",
             "platform": "BharatAI",
@@ -215,6 +260,7 @@ def _register_core_routes(app: FastAPI) -> None:
                 "postgresql": "connected" if db_ok else "offline",
                 "redis": "connected" if redis_ok else "offline",
                 "ollama": "connected" if ollama_ok else "offline",
+                "chromadb": "connected" if chroma_ok else "offline",
             },
         }
 

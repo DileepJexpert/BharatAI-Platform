@@ -16,3 +16,11 @@ pytest-asyncio>=0.23.0
 fakeredis>=2.21.0
 respx>=0.21.0
 aiofiles>=24.1.0
+# Agent framework (optional — works without it via simple routing)
+langgraph>=0.2.0
+# Vector search (optional — RAG unavailable without it)
+chromadb>=0.5.0
+# PDF generation (optional — document generation unavailable without it)
+fpdf2>=2.7.0
+# JWT authentication (optional — token auth unavailable without it)
+PyJWT>=2.8.0
